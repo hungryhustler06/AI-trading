@@ -6,7 +6,51 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor
 
-st.set_page_config(page_title="Swing Trading Dashboard", layout="wide")
+st.set_page_config(page_title="AlphaPulse Workstation", layout="wide")
+
+# 1. Initialize Persistent Session States
+if "cash_balance" not in st.session_state:
+    st.session_state.cash_balance = 100000.00
+
+if "portfolio" not in st.session_state:
+    # Structure: {'AAPL': {'shares': 10, 'avg_cost': 180.00}}
+    st.session_state.portfolio = {}
+
+if "watchlists" not in st.session_state:
+    st.session_state.watchlists = {
+        "Tech Titans": ["AAPL", "MSFT", "NVDA", "GOOGL"],
+        "Growth / Momentum": ["TSLA", "PLTR", "AMD", "COIN"]
+    }
+
+# 2. Sidebar Navigation
+st.sidebar.title("⚡ AlphaPulse")
+menu_choice = st.sidebar.radio(
+    "Navigation",
+    ["📡 Scanner", "📋 Watchlists", "💼 Paper Portfolio", "📈 Historical Charts", "🤖 AI Predictor"]
+)
+
+# 3. Page Routing
+if menu_choice == "📡 Scanner":
+    st.title("📡 Swing Trading Scanner")
+    # Scanner logic here...
+
+elif menu_choice == "📋 Watchlists":
+    st.title("📋 Watchlist Manager (Max 8 Lists)")
+    st.write(f"Active Watchlists: {len(st.session_state.watchlists)}/8")
+    # Watchlist CRUD operations...
+
+elif menu_choice == "💼 Paper Portfolio":
+    st.title("💼 Paper Trading Simulator")
+    st.metric("Available Cash", f"${st.session_state.cash_balance:,.2f}")
+    # Buy/Sell execution & holdings table...
+
+elif menu_choice == "📈 Historical Charts":
+    st.title("📈 Technical Deep-Dive")
+    # Plotly candlestick logic...
+
+elif menu_choice == "🤖 AI Predictor":
+    st.title("🤖 Fundamental & Technical Price Modeler")
+    # Predictive model / scoring engine...
 
 # --- Core Trading Logic ---
 
