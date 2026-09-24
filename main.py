@@ -2,7 +2,11 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import ta
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor
+
+st.set_page_config(page_title="Swing Trading Dashboard", layout="wide")
 
 # --- Core Trading Logic ---
 
@@ -40,7 +44,10 @@ class SwingStrategy:
         df['EMA_Long'] = ta.trend.EMAIndicator(df['Close'], window=p['ema_l']).ema_indicator()
         
         macd = ta.trend.MACD(df['Close'])
-        df['MACD'], df['MACD_Signal'] = macd.macd(), macd.macd_signal()
+        df['MACD'] = macd.macd()
+        df['MACD_Signal'] = macd.macd_signal()
+        df['MACD_Hist'] = macd.macd_diff()
+        
         df['RSI'] = ta.momentum.RSIIndicator(df['Close'], window=p['rsi_p']).rsi()
         df['Vol_SMA'] = df['Volume'].rolling(window=p['ema_s']).mean()
         df['ATR'] = ta.volatility.AverageTrueRange(df['High'], df['Low'], df['Close'], window=14).average_true_range()
@@ -55,62 +62,112 @@ class SwingStrategy:
             return 'SELL/EXIT 🔴'
         return 'HOLD ⚪'
 
-class Screener:
-    def __init__(self, strategy, sl_mult=1.5, tp_mult=3.0):
-        self.strategy = strategy
-        self.sl_mult = sl_mult
-        self.tp_mult = tp_mult
+# --- Interactive Plotting ---
 
-    def run(self, data_dict):
+def plot_interactive_chart(df, ticker, sl_mult=1.5, tp_mult=3.0):
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        vertical_spacing=0.08,
+        row_heights=[0.7, 0.3],
+        subplot_titles=(f"{ticker} Daily Candles & EMAs", "RSI (14)")
+    )
+
+    # 1. Price Candlesticks
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['Open'], high=df['High'],
+        low=df['Low'], close=df['Close'],
+        name='Price'
+    ), row=1, col=1)
+
+    # 2. EMAs
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Short'], line=dict(color='yellow', width=1.5), name='EMA 20'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Long'], line=dict(color='cyan', width=1.5), name='EMA 50'), row=1, col=1)
+
+    # 3. RSI
+    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], line=dict(color='purple', width=2), name='RSI'), row=2, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+    fig.add_hline(y=50, line_dash="dot", line_color="gray", row=2, col=1)
+
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_rangeslider_visible=False,
+        height=550,
+        margin=dict(l=30, r=30, t=40, b=30)
+    )
+    return fig
+
+# --- App UI & Execution ---
+
+st.title("📈 Swing Trading Signal Generator")
+
+# Sidebar
+st.sidebar.header("Scanner Settings")
+default_tickers = "AAPL, MSFT, NVDA, TSLA, AMD, META, AMZN, GOOGL, PLTR, COIN"
+ticker_input = st.sidebar.text_area("Watchlist", default_tickers)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Risk Parameters")
+sl_multiplier = st.sidebar.slider("Stop Loss Multiplier (ATR)", 1.0, 3.0, 1.5, 0.1)
+tp_multiplier = st.sidebar.slider("Take Profit Multiplier (ATR)", 1.0, 5.0, 3.0, 0.1)
+
+# Preserve state so dropdowns don't wipe scanner data
+if "market_data" not in st.session_state:
+    st.session_state.market_data = {}
+if "report_df" not in st.session_state:
+    st.session_state.report_df = pd.DataFrame()
+
+if st.sidebar.button("Run Scanner 🚀") or st.session_state.report_df.empty:
+    tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+    with st.spinner("Analyzing market data..."):
+        raw_data = MarketData.fetch_batch(tickers)
+        strategy = SwingStrategy()
+        
         results = []
-        for ticker, df in data_dict.items():
-            df = self.strategy.apply_indicators(df)
+        processed_data = {}
+        for ticker, df in raw_data.items():
+            df = strategy.apply_indicators(df)
             if df.empty:
                 continue
+            processed_data[ticker] = df
             latest = df.iloc[-1]
-            signal = self.strategy.get_signal(latest)
+            signal = strategy.get_signal(latest)
+            
             results.append({
                 'Ticker': ticker,
                 'Close': f"${latest['Close']:.2f}",
                 'Signal': signal,
-                'Stop_Loss': f"${latest['Close'] - (latest['ATR'] * self.sl_mult):.2f}" if 'BUY' in signal else '-',
-                'Target': f"${latest['Close'] + (latest['ATR'] * self.tp_mult):.2f}" if 'BUY' in signal else '-',
-                'RSI': round(latest['RSI'], 1)
+                'Stop_Loss': f"${latest['Close'] - (latest['ATR'] * sl_multiplier):.2f}" if 'BUY' in signal else '-',
+                'Target': f"${latest['Close'] + (latest['ATR'] * tp_multiplier):.2f}" if 'BUY' in signal else '-',
+                'RSI': round(latest['RSI'], 1),
+                '_raw_signal': signal
             })
-        return pd.DataFrame(results)
 
-# --- Streamlit Web App UI ---
+        st.session_state.market_data = processed_data
+        st.session_state.report_df = pd.DataFrame(results)
 
-st.set_page_config(page_title="Swing Trading Scanner", layout="wide")
-
-st.title("📈 Swing Trading Signal Generator")
-st.markdown("Automated multi-factor confirmation using EMA, MACD, RSI, and Volume.")
-
-# Sidebar Controls
-st.sidebar.header("Scanner Settings")
-default_tickers = "AAPL, MSFT, NVDA, TSLA, AMD, META, AMZN, GOOGL, PLTR, COIN"
-ticker_input = st.sidebar.text_area("Watchlist (comma separated)", default_tickers)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Risk Management (ATR)")
-sl_multiplier = st.sidebar.slider("Stop Loss Multiplier", 1.0, 3.0, 1.5, 0.1)
-tp_multiplier = st.sidebar.slider("Take Profit Multiplier", 1.0, 5.0, 3.0, 0.1)
-
-# Run Button
-if st.sidebar.button("Run Scanner 🚀"):
-    tickers = [t.strip().upper() for t in ticker_input.split(",") if t.strip()]
+# Display Dashboard
+if not st.session_state.report_df.empty:
+    df_display = st.session_state.report_df
     
-    with st.spinner(f"Fetching market data for {len(tickers)} tickers..."):
-        market_data = MarketData.fetch_batch(tickers)
-    
-    with st.spinner("Calculating technical indicators..."):
-        strategy = SwingStrategy()
-        screener = Screener(strategy=strategy, sl_mult=sl_multiplier, tp_mult=tp_multiplier)
-        report_df = screener.run(market_data)
-        
-    if not report_df.empty:
-        st.success("Scan Complete!")
-        # Display as an interactive table
-        st.dataframe(report_df, use_container_width=True, hide_index=True)
-    else:
-        st.error("No data found for the provided tickers.")
+    # Summary Metrics Row
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Scanned Tickers", len(df_display))
+    col2.metric("BUY Alerts", len(df_display[df_display['_raw_signal'].str.contains('BUY')]))
+    col3.metric("SELL Alerts", len(df_display[df_display['_raw_signal'].str.contains('SELL')]))
+    col4.metric("HOLD Status", len(df_display[df_display['_raw_signal'].str.contains('HOLD')]))
+
+    # Signal Table
+    st.markdown("### Scanner Summary")
+    st.dataframe(df_display.drop(columns=['_raw_signal']), use_container_width=True, hide_index=True)
+
+    # Technical Deep-Dive Charting
+    st.markdown("---")
+    st.markdown("### Technical Deep Dive")
+    selected_ticker = st.selectbox("Select a ticker to view chart", df_display['Ticker'].tolist())
+
+    if selected_ticker in st.session_state.market_data:
+        ticker_df = st.session_state.market_data[selected_ticker]
+        fig = plot_interactive_chart(ticker_df, selected_ticker, sl_multiplier, tp_multiplier)
+        st.plotly_chart(fig, use_container_width=True)
